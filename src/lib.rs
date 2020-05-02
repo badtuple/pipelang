@@ -1,11 +1,18 @@
+use errors::Error;
+use std::collections::HashMap;
+
 mod errors;
 mod filters;
 
-pub struct Interpreter;
+pub struct Interpreter {
+    sources: HashMap<String, Source>,
+}
 
 impl Interpreter {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            sources: HashMap::new(),
+        }
     }
 
     //pub fn exec(&self, _query: String) {
@@ -18,38 +25,69 @@ impl Interpreter {
     //self.exec_pipeline(pipeline);
     //}
 
-    fn exec_pipeline(&self, mut pipeline: Pipeline) -> Vec<Option<Datum>> {
-        // TODO: Right now we're collecting all the values upfront, which isn't the best call for
-        // long running pipelines. Eventually we'll need to pass results up to the user as they
-        // finish running through the pipeline;
+    fn register_source(&mut self, source: Source) {
+        self.sources.insert(source.name.clone(), source);
+    }
 
-        // TODO: This means state isn't persisted across runs
-        let mut filters = pipeline.filters;
+    fn push_data_to_source(&mut self, name: String, mut data: Vec<Datum>) -> Result<(), Error> {
+        match self.sources.get_mut(&name) {
+            Some(source) => source.data.append(&mut data),
+            None => return Err(Error::CannotPushToUnregisteredSource),
+        };
 
-        pipeline
-            .data
-            .iter_mut()
+        Ok(())
+    }
+
+    fn exec_pipeline(&mut self, mut pipeline: Pipeline) -> Result<Vec<Option<Datum>>, Error> {
+        // TODO: Right now we're collecting all the values upfront, which isn't
+        // the best call for long running pipelines. Eventually we'll need to
+        // pass results up to the user as they finish running through the
+        // pipeline
+
+        let data: Vec<Datum> = match self.sources.get_mut(&pipeline.source_name) {
+            Some(source) => source.data.drain(..).collect(),
+            None => return Err(Error::CannotReadFromUnregisteredSource),
+        };
+
+        let out = data
+            .iter()
             .map(|datum| {
                 // Pass data through Filters
                 let mut curr_datum: Option<Datum> = Some(datum.clone());
-                for filter in filters.iter_mut() {
+                for filter in pipeline.filters.iter_mut() {
                     curr_datum = filter.exec(curr_datum?).unwrap();
                 }
                 curr_datum
             })
             .filter(|d| d.is_some())
-            .collect()
+            .collect();
+
+        Ok(out)
+    }
+}
+
+struct Source {
+    name: String,
+    data: Vec<Datum>,
+}
+
+impl Source {
+    fn new(name: String) -> Self {
+        Source { name, data: vec![] }
     }
 }
 
 struct Pipeline {
-    data: Vec<Datum>,
+    source_name: String,
     filters: Vec<Box<dyn Filter>>,
 }
 
 impl Pipeline {
-    fn new(data: Vec<Datum>, filters: Vec<Box<dyn Filter>>) -> Self {
-        Pipeline { data, filters }
+    fn new(source_name: String, filters: Vec<Box<dyn Filter>>) -> Self {
+        Pipeline {
+            source_name,
+            filters,
+        }
     }
 }
 
@@ -72,11 +110,19 @@ mod tests {
 
     #[test]
     fn can_run_empty_pipeline() {
-        let data = vec![Datum::Integer(4)];
-        let pipeline = Pipeline::new(data, vec![]);
+        let mut interpreter = Interpreter::new();
 
-        let interpreter = Interpreter::new();
-        let data_out = interpreter.exec_pipeline(pipeline);
+        let source = Source::new("sensor".into());
+        interpreter.register_source(source);
+
+        let data = vec![Datum::Integer(4)];
+        interpreter.push_data_to_source("sensor".into(), data);
+
+        let pipeline = Pipeline::new("sensor".into(), vec![]);
+
+        let data_out = interpreter
+            .exec_pipeline(pipeline)
+            .expect("error returned from pipeline");
         assert_eq!(data_out.len(), 1);
         assert_eq!(data_out[0], Some(Datum::Integer(4)));
     }
@@ -94,54 +140,77 @@ mod tests {
             }
         }
 
-        let data = vec![Datum::Integer(4)];
-        let pipeline = Pipeline::new(data, vec![Box::new(Double), Box::new(Double)]);
+        let mut interpreter = Interpreter::new();
+        let source = Source::new("sensor".into());
+        interpreter.register_source(source);
 
-        let interpreter = Interpreter::new();
-        let data_out = interpreter.exec_pipeline(pipeline);
+        let data = vec![Datum::Integer(4)];
+        interpreter.push_data_to_source("sensor".into(), data);
+
+        let pipeline = Pipeline::new("sensor".into(), vec![Box::new(Double), Box::new(Double)]);
+
+        let data_out = interpreter
+            .exec_pipeline(pipeline)
+            .expect("error returned from pipeline");
         assert_eq!(data_out.len(), 1);
         assert_eq!(data_out[0], Some(Datum::Integer(16)));
     }
 
     #[test]
     fn can_handle_none_returns_from_filter() {
-        let data = vec![Datum::Integer(3), Datum::Integer(42)];
-        let pipeline = Pipeline::new(data, vec![Box::new(GreaterThan { op: 12 })]);
+        let mut interpreter = Interpreter::new();
+        let source = Source::new("sensor".into());
+        interpreter.register_source(source);
 
-        let interpreter = Interpreter::new();
-        let data_out = interpreter.exec_pipeline(pipeline);
+        let data = vec![Datum::Integer(3), Datum::Integer(42)];
+        interpreter.push_data_to_source("sensor".into(), data);
+
+        let pipeline = Pipeline::new("sensor".into(), vec![Box::new(GreaterThan { op: 12 })]);
+
+        let data_out = interpreter
+            .exec_pipeline(pipeline)
+            .expect("error returned from pipeline");
         assert_eq!(data_out.len(), 1);
         assert_eq!(data_out[0], Some(Datum::Integer(42)));
     }
 
     #[test]
     fn can_handle_aggregate_filters() {
-        let interpreter = Interpreter::new();
+        let mut interpreter = Interpreter::new();
+        let source = Source::new("sensor".into());
+        interpreter.register_source(source);
 
         let data = vec![Datum::Integer(1), Datum::Integer(2), Datum::Integer(3)];
+        interpreter.push_data_to_source("sensor".into(), data.clone());
+
         let pipeline = Pipeline::new(
-            data.clone(),
+            "sensor".into(),
             vec![Box::new(Batch {
                 n: 2,
                 in_progress: vec![],
             })],
         );
 
-        let data_out = interpreter.exec_pipeline(pipeline);
+        let data_out = interpreter
+            .exec_pipeline(pipeline)
+            .expect("error returned from pipeline");
         assert_eq!(data_out.len(), 1);
         assert_eq!(
             data_out[0],
             Some(Datum::Vec(vec!(Datum::Integer(1), Datum::Integer(2))))
         );
 
+        interpreter.push_data_to_source("sensor".into(), data.clone());
         let pipeline = Pipeline::new(
-            data.clone(),
+            "sensor".into(),
             vec![Box::new(Batch {
                 n: 1,
                 in_progress: vec![],
             })],
         );
-        let data_out = interpreter.exec_pipeline(pipeline);
+        let data_out = interpreter
+            .exec_pipeline(pipeline)
+            .expect("error returned from pipeline");
         assert_eq!(data_out.len(), 3);
         assert_eq!(
             data_out,
@@ -152,15 +221,18 @@ mod tests {
             )
         );
 
+        interpreter.push_data_to_source("sensor".into(), data.clone());
         let pipeline = Pipeline::new(
-            data.clone(),
+            "sensor".into(),
             vec![Box::new(Batch {
                 n: 5,
                 in_progress: vec![],
             })],
         );
 
-        let data_out = interpreter.exec_pipeline(pipeline);
+        let data_out = interpreter
+            .exec_pipeline(pipeline)
+            .expect("error returned from pipeline");
         assert_eq!(data_out.len(), 0);
     }
 }
