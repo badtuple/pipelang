@@ -5,13 +5,18 @@ mod errors;
 mod filters;
 
 pub struct Interpreter {
+    // sources is a map of Source name to Source
     sources: HashMap<String, Source>,
+
+    // pipelines is a map of Source name to Pipeline
+    pipelines: HashMap<String, Pipeline>,
 }
 
 impl Interpreter {
     pub fn new() -> Self {
         Self {
             sources: HashMap::new(),
+            pipelines: HashMap::new(),
         }
     }
 
@@ -29,6 +34,11 @@ impl Interpreter {
         self.sources.insert(source.name.clone(), source);
     }
 
+    fn register_pipeline(&mut self, pipeline: Pipeline) {
+        self.pipelines
+            .insert(pipeline.source_name.clone(), pipeline);
+    }
+
     fn push_data_to_source(&mut self, name: String, mut data: Vec<Datum>) -> Result<(), Error> {
         match self.sources.get_mut(&name) {
             Some(source) => source.data.append(&mut data),
@@ -38,13 +48,13 @@ impl Interpreter {
         Ok(())
     }
 
-    fn exec_pipeline(&mut self, mut pipeline: Pipeline) -> Result<Vec<Option<Datum>>, Error> {
-        // TODO: Right now we're collecting all the values upfront, which isn't
-        // the best call for long running pipelines. Eventually we'll need to
-        // pass results up to the user as they finish running through the
-        // pipeline
+    fn process_source(&mut self, source_name: String) -> Result<Vec<Option<Datum>>, Error> {
+        let pipeline = match self.pipelines.get_mut(&source_name) {
+            Some(pipeline) => pipeline,
+            None => return Err(Error::CannotReadFromUnregisteredSource),
+        };
 
-        let data: Vec<Datum> = match self.sources.get_mut(&pipeline.source_name) {
+        let data: Vec<Datum> = match self.sources.get_mut(&source_name) {
             Some(source) => source.data.drain(..).collect(),
             None => return Err(Error::CannotReadFromUnregisteredSource),
         };
@@ -119,9 +129,10 @@ mod tests {
         interpreter.push_data_to_source("sensor".into(), data);
 
         let pipeline = Pipeline::new("sensor".into(), vec![]);
+        interpreter.register_pipeline(pipeline);
 
         let data_out = interpreter
-            .exec_pipeline(pipeline)
+            .process_source("sensor".into())
             .expect("error returned from pipeline");
         assert_eq!(data_out.len(), 1);
         assert_eq!(data_out[0], Some(Datum::Integer(4)));
@@ -148,9 +159,10 @@ mod tests {
         interpreter.push_data_to_source("sensor".into(), data);
 
         let pipeline = Pipeline::new("sensor".into(), vec![Box::new(Double), Box::new(Double)]);
+        interpreter.register_pipeline(pipeline);
 
         let data_out = interpreter
-            .exec_pipeline(pipeline)
+            .process_source("sensor".into())
             .expect("error returned from pipeline");
         assert_eq!(data_out.len(), 1);
         assert_eq!(data_out[0], Some(Datum::Integer(16)));
@@ -166,9 +178,10 @@ mod tests {
         interpreter.push_data_to_source("sensor".into(), data);
 
         let pipeline = Pipeline::new("sensor".into(), vec![Box::new(GreaterThan { op: 12 })]);
+        interpreter.register_pipeline(pipeline);
 
         let data_out = interpreter
-            .exec_pipeline(pipeline)
+            .process_source("sensor".into())
             .expect("error returned from pipeline");
         assert_eq!(data_out.len(), 1);
         assert_eq!(data_out[0], Some(Datum::Integer(42)));
@@ -190,9 +203,10 @@ mod tests {
                 in_progress: vec![],
             })],
         );
+        interpreter.register_pipeline(pipeline);
 
         let data_out = interpreter
-            .exec_pipeline(pipeline)
+            .process_source("sensor".into())
             .expect("error returned from pipeline");
         assert_eq!(data_out.len(), 1);
         assert_eq!(
@@ -208,8 +222,9 @@ mod tests {
                 in_progress: vec![],
             })],
         );
+        interpreter.register_pipeline(pipeline);
         let data_out = interpreter
-            .exec_pipeline(pipeline)
+            .process_source("sensor".into())
             .expect("error returned from pipeline");
         assert_eq!(data_out.len(), 3);
         assert_eq!(
@@ -229,10 +244,12 @@ mod tests {
                 in_progress: vec![],
             })],
         );
+        interpreter.register_pipeline(pipeline);
 
         let data_out = interpreter
-            .exec_pipeline(pipeline)
+            .process_source("sensor".into())
             .expect("error returned from pipeline");
+
         assert_eq!(data_out.len(), 0);
     }
 }
