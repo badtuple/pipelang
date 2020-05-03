@@ -1,4 +1,30 @@
-use crate::{errors::Error, Datum, Filter};
+use crate::{errors::Error, Datum};
+
+pub trait Filter: FilterClone {
+    fn exec(&mut self, datum: Datum) -> Result<Option<Datum>, Error>;
+}
+
+// This is a hack to allow us to clone Filters that are passed around as trait objects.
+// https://stackoverflow.com/questions/30353462/how-to-clone-a-struct-storing-a-boxed-trait-object/30353928#30353928
+
+pub trait FilterClone {
+    fn clone_box(&self) -> Box<dyn Filter>;
+}
+
+impl<T> FilterClone for T
+where
+    T: 'static + Filter + Clone,
+{
+    fn clone_box(&self) -> Box<dyn Filter> {
+        Box::new(self.clone())
+    }
+}
+
+impl Clone for Box<dyn Filter> {
+    fn clone(&self) -> Box<dyn Filter> {
+        self.clone_box()
+    }
+}
 
 #[derive(Clone)]
 pub struct GreaterThan {

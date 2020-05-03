@@ -1,15 +1,21 @@
 use errors::Error;
+use filters::Filter;
 use std::collections::HashMap;
 
 mod errors;
 mod filters;
+mod parser;
 
+#[derive(Default)]
 pub struct Interpreter {
     // sources is a map of Source name to Source
     sources: HashMap<String, Source>,
 
     // pipelines is a map of Source name to Pipeline
     pipelines: HashMap<String, Pipeline>,
+
+    // registery of filter names to filter objects
+    filter_registry: HashMap<String, Box<dyn Filter>>,
 }
 
 impl Interpreter {
@@ -17,18 +23,20 @@ impl Interpreter {
         Self {
             sources: HashMap::new(),
             pipelines: HashMap::new(),
+            filter_registry: HashMap::new(),
         }
     }
 
-    //pub fn exec(&self, _query: String) {
-    // TODO: Parse query into AST
+    pub fn exec(&mut self, query: String) -> Result<(), Error> {
+        let pipeline = parser::parse_pipeline(&self.filter_registry, query)?;
+        self.register_source(Source::new(pipeline.source_name.clone()));
+        self.register_pipeline(pipeline);
+        Ok(())
+    }
 
-    // TODO: AST to runnable Pipeline
-
-    // Execute the pipeline on the data
-    //let pipeline = Pipeline::new(vec![Datum { data: 4 }], vec![]);
-    //self.exec_pipeline(pipeline);
-    //}
+    pub fn register_filter(&mut self, name: String, filter: Box<dyn Filter>) {
+        self.filter_registry.insert(name, filter);
+    }
 
     fn register_source(&mut self, source: Source) {
         self.sources.insert(source.name.clone(), source);
@@ -39,7 +47,7 @@ impl Interpreter {
             .insert(pipeline.source_name.clone(), pipeline);
     }
 
-    fn push_data_to_source(&mut self, name: String, mut data: Vec<Datum>) -> Result<(), Error> {
+    pub fn push_data_to_source(&mut self, name: String, mut data: Vec<Datum>) -> Result<(), Error> {
         match self.sources.get_mut(&name) {
             Some(source) => source.data.append(&mut data),
             None => return Err(Error::CannotPushToUnregisteredSource),
@@ -48,7 +56,7 @@ impl Interpreter {
         Ok(())
     }
 
-    fn process_source(&mut self, source_name: String) -> Result<Vec<Option<Datum>>, Error> {
+    pub fn process_source(&mut self, source_name: String) -> Result<Vec<Option<Datum>>, Error> {
         let pipeline = match self.pipelines.get_mut(&source_name) {
             Some(pipeline) => pipeline,
             None => return Err(Error::CannotReadFromUnregisteredSource),
@@ -87,22 +95,18 @@ impl Source {
     }
 }
 
-struct Pipeline {
+pub struct Pipeline {
     source_name: String,
     filters: Vec<Box<dyn Filter>>,
 }
 
 impl Pipeline {
-    fn new(source_name: String, filters: Vec<Box<dyn Filter>>) -> Self {
+    pub fn new(source_name: String, filters: Vec<Box<dyn Filter>>) -> Self {
         Pipeline {
             source_name,
             filters,
         }
     }
-}
-
-pub trait Filter {
-    fn exec(&mut self, datum: Datum) -> Result<Option<Datum>, errors::Error>;
 }
 
 // A single piece of data from a Source that will be fed through the Pipeline.
@@ -126,7 +130,9 @@ mod tests {
         interpreter.register_source(source);
 
         let data = vec![Datum::Integer(4)];
-        interpreter.push_data_to_source("sensor".into(), data);
+        interpreter
+            .push_data_to_source("sensor".into(), data)
+            .expect("could not push to interpreter");
 
         let pipeline = Pipeline::new("sensor".into(), vec![]);
         interpreter.register_pipeline(pipeline);
@@ -156,7 +162,9 @@ mod tests {
         interpreter.register_source(source);
 
         let data = vec![Datum::Integer(4)];
-        interpreter.push_data_to_source("sensor".into(), data);
+        interpreter
+            .push_data_to_source("sensor".into(), data)
+            .expect("could not push to interpreter");
 
         let pipeline = Pipeline::new("sensor".into(), vec![Box::new(Double), Box::new(Double)]);
         interpreter.register_pipeline(pipeline);
@@ -175,7 +183,9 @@ mod tests {
         interpreter.register_source(source);
 
         let data = vec![Datum::Integer(3), Datum::Integer(42)];
-        interpreter.push_data_to_source("sensor".into(), data);
+        interpreter
+            .push_data_to_source("sensor".into(), data)
+            .expect("could not push to interpreter");
 
         let pipeline = Pipeline::new("sensor".into(), vec![Box::new(GreaterThan { op: 12 })]);
         interpreter.register_pipeline(pipeline);
@@ -194,7 +204,9 @@ mod tests {
         interpreter.register_source(source);
 
         let data = vec![Datum::Integer(1), Datum::Integer(2), Datum::Integer(3)];
-        interpreter.push_data_to_source("sensor".into(), data.clone());
+        interpreter
+            .push_data_to_source("sensor".into(), data.clone())
+            .expect("could not push to interpreter");
 
         let pipeline = Pipeline::new(
             "sensor".into(),
@@ -214,7 +226,9 @@ mod tests {
             Some(Datum::Vec(vec!(Datum::Integer(1), Datum::Integer(2))))
         );
 
-        interpreter.push_data_to_source("sensor".into(), data.clone());
+        interpreter
+            .push_data_to_source("sensor".into(), data.clone())
+            .expect("could not push to interpreter");
         let pipeline = Pipeline::new(
             "sensor".into(),
             vec![Box::new(Batch {
@@ -236,7 +250,9 @@ mod tests {
             )
         );
 
-        interpreter.push_data_to_source("sensor".into(), data.clone());
+        interpreter
+            .push_data_to_source("sensor".into(), data.clone())
+            .expect("could not push to interpreter");
         let pipeline = Pipeline::new(
             "sensor".into(),
             vec![Box::new(Batch {
